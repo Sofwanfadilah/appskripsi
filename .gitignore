@@ -1,0 +1,5 @@
+.venv/
+fma_small/
+models/
+__pycache__/
+*.py[cod]

@@ -1,0 +1,2060 @@
+import streamlit as st
+import pandas as pd
+import numpy as np
+import sqlite3
+import os
+import pickle
+from pathlib import Path
+from datetime import datetime
+
+import matplotlib.pyplot as plt
+import soundfile as sf
+PROJECT_ROOT = Path(__file__).resolve().parent
+DATA_DIR = PROJECT_ROOT / "data"
+MODEL_DIR = PROJECT_ROOT / "models"
+DATASET_ROOT = PROJECT_ROOT / "Data" / "auditory-evoked-potential-eeg-biometric-dataset-1.0.0" / "auditory-evoked-potential-eeg-biometric-dataset-1.0.0"
+
+# Import dataset loader
+from dataset_loader import load_all_datasets, get_available_datasets, load_auditory_dataset, load_motor_imagery_edf, load_gdf_dataset, load_bids_dataset
+
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import (
+    accuracy_score,
+    precision_score,
+    recall_score,
+    f1_score,
+    classification_report,
+    confusion_matrix
+)
+
+
+# =========================================================
+# KONFIGURASI APLIKASI
+# =========================================================
+
+st.set_page_config(
+    page_title="EEG Random Forest",
+    page_icon="E",
+    layout="wide"
+)
+
+st.markdown("""
+<style>
+    @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Space+Mono:wght@400;700&display=swap');
+    :root { --ink: #172326; --muted: #687772; --paper: #f7f8f5; --line: #dce4df; --accent: #d85d38; --mint: #e3f0eb; --panel: #ffffff; }
+    .stApp { background: var(--paper) !important; color: var(--ink) !important; }
+    [data-testid="stAppViewContainer"], [data-testid="stMain"] { background-color: var(--paper) !important; color: var(--ink) !important; background-image: radial-gradient(#dce6e0 0.7px, transparent 0.7px); background-size: 22px 22px; }
+    [data-testid="stMain"] p, [data-testid="stMain"] label, [data-testid="stMain"] h1, [data-testid="stMain"] h2, [data-testid="stMain"] h3, [data-testid="stMain"] span { color: var(--ink); }
+    .block-container { max-width: 1320px; padding-top: 2.5rem; padding-bottom: 4rem; }
+    [data-testid="stSidebar"] { background: var(--ink); border-right: 4px solid var(--accent); }
+    [data-testid="stSidebar"] * { color: #edf1ed; }
+    [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p { color: #9eb1a9; font-size: .78rem; }
+    [data-testid="stSidebar"] [role="radiogroup"] { gap: .35rem; }
+    [data-testid="stSidebar"] [role="radiogroup"] label { border-left: 3px solid transparent; border-radius: 4px; padding: .7rem .75rem; transition: background .2s ease, border-color .2s ease; }
+    [data-testid="stSidebar"] [role="radiogroup"] label:hover, [data-testid="stSidebar"] [role="radiogroup"] label:has(input:checked) { background: #263638; border-left-color: var(--accent); }
+    [data-testid="stMetric"] { background: var(--panel); border: 1px solid var(--line); border-top: 3px solid var(--accent); padding: 1.05rem 1.15rem; border-radius: 8px; box-shadow: 0 3px 12px rgba(23,35,38,.06); }
+    [data-testid="stMetricLabel"] { color: var(--muted); text-transform: uppercase; font-size: .7rem; letter-spacing: .08em; }
+    [data-testid="stMetricValue"] { font-family: 'Space Mono', monospace; color: var(--ink); }
+    h1, h2, h3 { color: var(--ink); font-family: 'DM Sans', sans-serif; letter-spacing: 0; }
+    p, label, [data-testid="stMarkdownContainer"] { font-family: 'DM Sans', sans-serif; letter-spacing: 0; }
+    [data-testid="stHeader"] { background: transparent; }
+    .hero { position: relative; overflow: hidden; background: var(--ink); color: white; padding: 2.35rem 2.5rem; border-bottom: 6px solid var(--accent); margin-bottom: 2rem; border-radius: 10px; box-shadow: 0 10px 24px rgba(23,35,38,.12); }
+    .hero h1 { color: white; margin: 0; font-size: 2.35rem; letter-spacing: 0; }
+    .hero p { margin: .55rem 0 0; color: #bdd0c8; max-width: 580px; }
+    .stButton > button { border-radius: 6px; border: 1px solid #aebdb6; font-weight: 600; min-height: 2.7rem; transition: transform .15s ease, box-shadow .15s ease, background .15s ease; }
+    .stButton > button:hover { transform: translateY(-1px); box-shadow: 0 4px 10px rgba(23,35,38,.12); }
+    .stButton > button[kind="primary"] { background: var(--accent); border-color: var(--accent); color: white; }
+    .stButton > button[kind="primary"] * { color: white !important; }
+    [data-testid="stFileUploader"] { border: 1px dashed #879b92; background: var(--panel); border-radius: 8px; }
+    [data-baseweb="tab-list"] { gap: .25rem; border-bottom: 1px solid var(--line); }
+    [data-baseweb="tab"] { padding: .75rem 1rem; color: var(--muted); border-radius: 6px 6px 0 0; }
+    [aria-selected="true"][data-baseweb="tab"] { color: var(--ink); background: var(--mint); }
+    [data-baseweb="input"], [data-baseweb="select"] > div { background: var(--panel); border-radius: 6px; border-color: #b8c2bd; }
+    [data-baseweb="input"] input, [data-baseweb="select"] input, [data-baseweb="select"] span { color: var(--ink) !important; -webkit-text-fill-color: var(--ink); }
+    [data-testid="stFileUploader"] *, [data-testid="stFileUploaderDropzone"] * { color: var(--ink) !important; }
+    [data-testid="stTabs"] button { color: var(--muted) !important; }
+    [data-testid="stTabs"] button[aria-selected="true"] { color: var(--ink) !important; }
+    [data-testid="stAlert"] * { color: var(--ink) !important; }
+    [data-testid="stDataFrame"] { border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: var(--panel); }
+    hr { border-color: var(--line); }
+    .stAlert { border-radius: 8px; }
+    [data-testid="stVerticalBlock"] > [data-testid="stElementContainer"] h2 { margin-top: .8rem; }
+    @media (max-width: 720px) {
+        .block-container { padding: 1.2rem .85rem 2.5rem; }
+        .hero { padding: 1.6rem 1.25rem; margin-bottom: 1.3rem; }
+        .hero h1 { font-size: 1.8rem; }
+        [data-testid="stMetric"] { padding: .8rem; }
+    }
+</style>
+""", unsafe_allow_html=True)
+
+
+# =========================================================
+# KONSTANTA
+# =========================================================
+
+DATABASE_PATH = DATA_DIR / "eeg_database.db"
+
+MODEL_PATH = MODEL_DIR / "random_forest_model.pkl"
+
+BAND_RANGES = {
+    "Delta": "1-4 Hz",
+    "Theta": "4-8 Hz",
+    "Alpha": "8-13 Hz",
+    "Beta": "13-30 Hz",
+    "Gamma": "30-45 Hz",
+}
+
+
+# =========================================================
+# MEMBUAT FOLDER
+# =========================================================
+
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+MODEL_DIR.mkdir(parents=True, exist_ok=True)
+
+
+# =========================================================
+# KONEKSI DATABASE
+# =========================================================
+
+def get_connection():
+
+    conn = sqlite3.connect(
+        str(DATABASE_PATH),
+        check_same_thread=False
+    )
+
+    return conn
+
+
+# =========================================================
+# MEMBUAT TABEL DATABASE
+# =========================================================
+
+def create_tables():
+
+    conn = get_connection()
+
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS eeg_data (
+
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+        created_at TEXT,
+
+        frequency_sound REAL,
+
+        delta_power REAL,
+
+        theta_power REAL,
+
+        alpha_power REAL,
+
+        beta_power REAL,
+
+        gamma_power REAL,
+
+        brain_wave TEXT,
+
+        source TEXT
+
+    )
+    """)
+
+    conn.commit()
+
+    conn.close()
+
+
+# Jalankan pembuatan tabel
+
+create_tables()
+
+
+# =========================================================
+# FUNGSI LOAD DATA
+# =========================================================
+
+def load_eeg_data():
+
+    conn = get_connection()
+
+    query = """
+    SELECT * FROM eeg_data
+    ORDER BY id DESC
+    """
+
+    df = pd.read_sql_query(
+        query,
+        conn
+    )
+
+    conn.close()
+
+    return df
+
+
+def _band_powers(signal, sampling_rate=200):
+    """Return mean power in standard EEG bands for one recording."""
+    centered = signal - np.mean(signal, axis=0, keepdims=True)
+    spectrum = np.abs(np.fft.rfft(centered, axis=0)) ** 2 / len(centered)
+    frequencies = np.fft.rfftfreq(len(centered), d=1 / sampling_rate)
+    bands = {
+        "delta_power": (1, 4),
+        "theta_power": (4, 8),
+        "alpha_power": (8, 13),
+        "beta_power": (13, 30),
+        "gamma_power": (30, 45),
+    }
+    powers = {}
+    for name, (low, high) in bands.items():
+        mask = (frequencies >= low) & (frequencies < high)
+        powers[name] = float(np.mean(spectrum[mask])) if mask.any() else 0.0
+    return powers
+
+
+def extract_audio_frequency(audio_file):
+    """Estimate dominant frequency and audio-derived band powers."""
+    audio_file.seek(0)
+    samples, sample_rate = sf.read(audio_file, dtype="float32", always_2d=False)
+    if samples.ndim > 1:
+        samples = np.mean(samples, axis=1)
+    if samples.size == 0:
+        raise ValueError("File audio kosong atau tidak dapat dibaca.")
+    spectrum = np.abs(np.fft.rfft(samples))
+    frequencies = np.fft.rfftfreq(samples.size, d=1 / sample_rate)
+    if spectrum.size < 2 or not np.any(spectrum[1:]):
+        raise ValueError("Frekuensi dominan tidak dapat dihitung dari file audio.")
+    power_spectrum = spectrum ** 2 / samples.size
+    bands = {
+        "delta_power": (1, 4),
+        "theta_power": (4, 8),
+        "alpha_power": (8, 13),
+        "beta_power": (13, 30),
+        "gamma_power": (30, 45),
+    }
+    powers = {}
+    for name, (low, high) in bands.items():
+        mask = (frequencies >= low) & (frequencies < high)
+        powers[name] = float(np.mean(power_spectrum[mask])) if mask.any() else 0.0
+    return float(frequencies[1:][np.argmax(spectrum[1:])]), powers
+
+
+def import_dataset_records():
+    """Import one feature row per filtered recording into the app database."""
+    signal_dir = DATASET_ROOT / "Filtered_Data"
+    files = sorted(signal_dir.glob("s*_ex*.csv"))
+    if not files:
+        raise FileNotFoundError(f"Folder sinyal tidak ditemukan: {signal_dir}")
+
+    imported = 0
+    existing = {row[0] for row in load_eeg_data()[["source"]].itertuples(index=False, name=None)}
+    for file_path in files:
+        source = f"Dataset EEG:{file_path.name}"
+        if source in existing:
+            continue
+        signal_df = pd.read_csv(file_path, usecols=["P4", "Cz", "F8", "T7"])
+        powers = _band_powers(signal_df.to_numpy(dtype=float))
+        wave = max(powers, key=powers.get).replace("_power", "").title()
+        experiment = int(file_path.stem.split("_ex")[1].split("_")[0])
+        save_eeg_data(experiment, **powers, brain_wave=wave, source=source)
+        imported += 1
+    return imported, len(files)
+
+
+def relabel_dataset_records():
+    """Recompute labels for original EEG records from their extracted powers."""
+    conn = get_connection()
+    try:
+        records = pd.read_sql_query(
+            "SELECT id, delta_power, theta_power, alpha_power, beta_power, gamma_power "
+            "FROM eeg_data WHERE source LIKE 'Dataset EEG:%'",
+            conn,
+        )
+        updates = []
+        for record in records.itertuples(index=False):
+            powers = {
+                "Delta": record.delta_power,
+                "Theta": record.theta_power,
+                "Alpha": record.alpha_power,
+                "Beta": record.beta_power,
+                "Gamma": record.gamma_power,
+            }
+            updates.append((max(powers, key=powers.get), record.id))
+        conn.executemany("UPDATE eeg_data SET brain_wave = ? WHERE id = ?", updates)
+        conn.commit()
+        return len(updates)
+    finally:
+        conn.close()
+
+
+def load_database_eeg_signal(source):
+    """Load the original four-channel EEG signal behind a database record."""
+    prefix = "Dataset EEG:"
+    if not str(source).startswith(prefix):
+        raise ValueError("Rekaman ini tidak memiliki file sinyal EEG asli.")
+    signal_path = DATASET_ROOT / "Filtered_Data" / str(source)[len(prefix):]
+    if not signal_path.exists():
+        raise FileNotFoundError(f"File sinyal EEG tidak ditemukan: {signal_path.name}")
+    return pd.read_csv(signal_path, usecols=["P4", "Cz", "F8", "T7"])
+
+
+# =========================================================
+# MULTI-DATASET IMPORT FUNCTIONS
+# =========================================================
+
+def import_multi_dataset(dataset_name: str):
+    """Import data dari dataset tertentu"""
+    existing_sources = set()
+    try:
+        df = load_eeg_data()
+        if len(df) > 0:
+            existing_sources = set(df["source"].tolist())
+    except:
+        pass
+    
+    imported = 0
+    
+    if dataset_name == "Auditory Dataset":
+        records, msg = load_auditory_dataset()
+    elif dataset_name == "Motor Imagery Dataset":
+        records, msg = load_motor_imagery_edf()
+    elif dataset_name == "GDF Dataset":
+        records, msg = load_gdf_dataset()
+    elif dataset_name == "BIDS Dataset":
+        records, msg = load_bids_dataset()
+    else:
+        return 0, f"Dataset '{dataset_name}' tidak dikenal"
+    
+    for record in records:
+        if record["source"] not in existing_sources:
+            try:
+                save_eeg_data(**record)
+                imported += 1
+            except Exception as e:
+                print(f"Error saving record: {e}")
+                continue
+    
+    return imported, msg
+
+
+# =========================================================
+# FUNGSI MENYIMPAN DATA
+# =========================================================
+
+def save_eeg_data(
+    frequency_sound,
+    delta_power,
+    theta_power,
+    alpha_power,
+    beta_power,
+    gamma_power,
+    brain_wave,
+    source="Manual Input"
+):
+
+    conn = get_connection()
+
+    cursor = conn.cursor()
+
+    created_at = datetime.now().strftime(
+        "%Y-%m-%d %H:%M:%S"
+    )
+
+    cursor.execute("""
+    INSERT INTO eeg_data (
+
+        created_at,
+        frequency_sound,
+        delta_power,
+        theta_power,
+        alpha_power,
+        beta_power,
+        gamma_power,
+        brain_wave,
+        source
+
+    )
+
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+
+    """, (
+
+        created_at,
+        frequency_sound,
+        delta_power,
+        theta_power,
+        alpha_power,
+        beta_power,
+        gamma_power,
+        brain_wave,
+        source
+
+    ))
+
+    conn.commit()
+
+    conn.close()
+
+
+# =========================================================
+# HAPUS DATA
+# =========================================================
+
+def delete_eeg_data(data_id):
+
+    conn = get_connection()
+
+    cursor = conn.cursor()
+
+    cursor.execute(
+        "DELETE FROM eeg_data WHERE id = ?",
+        (data_id,)
+    )
+
+    conn.commit()
+
+    conn.close()
+
+
+# =========================================================
+# SIMPAN MODEL
+# =========================================================
+
+def save_model(model, features):
+
+    model_data = {
+
+        "model": model,
+
+        "features": features
+
+    }
+
+    with open(
+        MODEL_PATH,
+        "wb"
+    ) as file:
+
+        pickle.dump(
+            model_data,
+            file
+        )
+
+
+# =========================================================
+# LOAD MODEL
+# =========================================================
+
+def load_model():
+
+    if os.path.exists(MODEL_PATH):
+
+        try:
+            with open(MODEL_PATH, "rb") as file:
+                model_data = pickle.load(file)
+            if not isinstance(model_data, dict) or "model" not in model_data or "features" not in model_data:
+                return None
+            return model_data
+        except (EOFError, OSError, pickle.UnpicklingError):
+            return None
+
+    return None
+
+
+# =========================================================
+# FUNGSI INTERPRETASI OTAK
+# =========================================================
+
+def get_brain_interpretation(brain_wave):
+
+    interpretations = {
+
+        "Delta": {
+            "title": "Aktivitas Delta",
+            "description": """
+Aktivitas EEG menunjukkan dominasi pada pita Delta.
+
+Secara umum, gelombang Delta merupakan aktivitas
+frekuensi rendah yang sering dikaitkan dengan tidur
+dalam dalam kondisi fisiologis normal.
+""",
+            "activities": [
+                "Aktivitas frekuensi rendah",
+                "Dapat berkaitan dengan tidur dalam",
+                "Perlu mempertimbangkan kondisi eksperimen"
+            ]
+        },
+
+
+        "Theta": {
+            "title": "Aktivitas Theta",
+            "description": """
+Aktivitas EEG menunjukkan dominasi pada pita Theta.
+
+Secara umum, aktivitas Theta dapat muncul pada kondisi
+relaksasi mendalam, mengantuk, atau transisi menuju tidur.
+""",
+            "activities": [
+                "Relaksasi",
+                "Mengantuk",
+                "Aktivitas internal meningkat"
+            ]
+        },
+
+
+        "Alpha": {
+            "title": "Aktivitas Alpha",
+            "description": """
+Aktivitas EEG menunjukkan dominasi pada pita Alpha.
+
+Secara umum, aktivitas Alpha sering dikaitkan dengan
+kondisi rileks namun tetap sadar.
+""",
+            "activities": [
+                "Relaksasi",
+                "Tetap sadar",
+                "Aktivitas mental relatif tenang"
+            ]
+        },
+
+
+        "Beta": {
+            "title": "Aktivitas Beta",
+            "description": """
+Aktivitas EEG menunjukkan dominasi pada pita Beta.
+
+Secara umum, aktivitas Beta sering dikaitkan dengan
+kewaspadaan dan aktivitas mental yang aktif.
+""",
+            "activities": [
+                "Kewaspadaan",
+                "Konsentrasi",
+                "Aktivitas mental aktif"
+            ]
+        },
+
+
+        "Gamma": {
+            "title": "Aktivitas Gamma",
+            "description": """
+Aktivitas EEG menunjukkan dominasi pada pita Gamma.
+
+Aktivitas frekuensi tinggi dapat berkaitan dengan proses
+neural tertentu, namun interpretasinya perlu dilakukan
+secara hati-hati dan mempertimbangkan artefak sinyal.
+""",
+            "activities": [
+                "Aktivitas frekuensi tinggi",
+                "Proses neural tertentu",
+                "Perlu pemeriksaan kualitas sinyal"
+            ]
+        }
+
+    }
+
+    return interpretations.get(
+        brain_wave,
+        {
+            "title": "Tidak Diketahui",
+            "description": "Interpretasi tidak tersedia.",
+            "activities": []
+        }
+    )
+
+
+# =========================================================
+# VISUALISASI BAR CHART
+# =========================================================
+
+def plot_brain_wave_bar(
+    delta,
+    theta,
+    alpha,
+    beta,
+    gamma
+):
+
+    data = pd.DataFrame({
+
+        "Gelombang": [
+
+            "Delta",
+            "Theta",
+            "Alpha",
+            "Beta",
+            "Gamma"
+
+        ],
+
+        "Power": [
+
+            delta,
+            theta,
+            alpha,
+            beta,
+            gamma
+
+        ]
+
+    })
+
+    fig, ax = plt.subplots(
+        figsize=(8, 4)
+    )
+
+    ax.bar(
+        data["Gelombang"],
+        data["Power"]
+    )
+
+    ax.set_title(
+        "Kekuatan Aktivitas Gelombang Otak"
+    )
+
+    ax.set_xlabel(
+        "Jenis Gelombang"
+    )
+
+    ax.set_ylabel(
+        "Power"
+    )
+
+    return fig
+
+
+# =========================================================
+# RADAR CHART
+# =========================================================
+
+def plot_radar_chart(
+    delta,
+    theta,
+    alpha,
+    beta,
+    gamma
+):
+
+    labels = np.array([
+
+        "Delta",
+        "Theta",
+        "Alpha",
+        "Beta",
+        "Gamma"
+
+    ])
+
+    values = np.array([
+
+        delta,
+        theta,
+        alpha,
+        beta,
+        gamma
+
+    ])
+
+    angles = np.linspace(
+        0,
+        2 * np.pi,
+        len(labels),
+        endpoint=False
+    )
+
+    values = np.append(values, values[0])
+    angles = np.append(
+        angles,
+        angles[0]
+    )
+
+    fig, ax = plt.subplots(
+
+        figsize=(6, 6),
+
+        subplot_kw=dict(
+            polar=True
+        )
+
+    )
+
+    ax.plot(
+        angles,
+        values,
+        linewidth=2
+    )
+
+    ax.fill(
+        angles,
+        values,
+        alpha=0.25
+    )
+
+    ax.set_xticks(
+        angles[:-1]
+    )
+
+    ax.set_xticklabels(
+        labels
+    )
+
+    ax.set_title(
+        "Profil Aktivitas EEG"
+    )
+
+    return fig
+
+
+def plot_waveform_example(brain_wave):
+    """Plot illustrative waveforms for all EEG bands and highlight the result."""
+    band_frequencies = {
+        "Delta": 2,
+        "Theta": 6,
+        "Alpha": 10,
+        "Beta": 20,
+        "Gamma": 40,
+    }
+    colors = {
+        "Delta": "#2f6f8f",
+        "Theta": "#3d8b76",
+        "Alpha": "#e36b42",
+        "Beta": "#bc5b78",
+        "Gamma": "#7b61a8",
+    }
+    time = np.linspace(0, 1, 600)
+    bands = list(band_frequencies)
+    fig, axes = plt.subplots(len(bands), 1, figsize=(10, 6.5), sharex=True)
+    fig.patch.set_facecolor("#fbfaf6")
+    for axis, band in zip(axes, bands):
+        frequency = band_frequencies[band]
+        waveform = np.sin(2 * np.pi * frequency * time)
+        waveform += 0.18 * np.sin(2 * np.pi * (frequency * 2) * time)
+        axis.set_facecolor("#fbfaf6")
+        axis.plot(time, waveform, color=colors[band], linewidth=1.6)
+        axis.set_ylabel(band, rotation=0, labelpad=28, va="center", fontweight="bold", color=colors[band])
+        axis.set_ylim(-1.45, 1.45)
+        axis.grid(axis="y", color="#d9d5c9", linewidth=0.6, alpha=0.7)
+        axis.spines[["top", "right", "left"]].set_visible(False)
+        axis.tick_params(axis="y", left=False, labelleft=False)
+        if band == brain_wave:
+            axis.axhspan(-1.45, 1.45, color=colors[band], alpha=0.08)
+            axis.text(1.01, 0, "hasil", transform=axis.get_yaxis_transform(), color=colors[band], fontweight="bold", va="center")
+    axes[-1].set_xlabel("Waktu (detik)")
+    axes[-1].set_xlim(0, 1)
+    fig.suptitle("Contoh bentuk gelombang otak", x=0.08, ha="left", fontsize=14, fontweight="bold", color="#172326")
+    fig.text(0.08, 0.01, "Frekuensi ilustrasi: Delta 2 Hz | Theta 6 Hz | Alpha 10 Hz | Beta 20 Hz | Gamma 40 Hz", fontsize=8, color="#687772")
+    fig.tight_layout()
+    fig.subplots_adjust(bottom=0.08, top=0.93, left=0.12, right=0.92, hspace=0.22)
+    return fig
+
+
+def plot_original_eeg_signal(signal_df, sampling_rate=200):
+    """Plot normalized original EEG channels from the selected recording."""
+    channels = ["P4", "Cz", "F8", "T7"]
+    signal = signal_df[channels].apply(pd.to_numeric, errors="coerce").dropna()
+    signal = signal.iloc[: min(len(signal), sampling_rate * 5)]
+    time = np.arange(len(signal)) / sampling_rate
+    fig, axis = plt.subplots(figsize=(10, 4.5))
+    fig.patch.set_facecolor("#fbfaf6")
+    axis.set_facecolor("#fbfaf6")
+    for index, channel in enumerate(channels):
+        values = signal[channel].to_numpy(dtype=float)
+        scale = np.std(values) or 1.0
+        normalized = (values - np.mean(values)) / scale
+        axis.plot(time, normalized + (len(channels) - index - 1) * 4, linewidth=0.75, label=channel)
+    axis.set_title("Sinyal EEG asli dari database", loc="left", fontsize=14, fontweight="bold", color="#172326")
+    axis.set_xlabel("Waktu (detik)")
+    axis.set_ylabel("Kanal")
+    axis.set_yticks([0, 4, 8, 12], ["T7", "F8", "Cz", "P4"])
+    axis.grid(axis="x", color="#d9d5c9", linewidth=0.6)
+    axis.spines[["top", "right", "left"]].set_visible(False)
+    axis.legend(loc="upper right", ncol=4, frameon=False)
+    fig.tight_layout()
+    return fig
+
+
+# =========================================================
+# HEADER
+# =========================================================
+
+st.markdown("""
+<div class="hero">
+    <h1>EEG Signal Lab</h1>
+    <p>Laboratorium pembacaan pola gelombang otak berbasis fitur EEG dan Random Forest.</p>
+</div>
+""", unsafe_allow_html=True)
+
+
+# =========================================================
+# SIDEBAR
+# =========================================================
+
+st.sidebar.title("EEG / LAB")
+st.sidebar.caption("SIGNAL ANALYSIS WORKSTATION")
+
+menu = st.sidebar.radio(
+
+    "NAVIGASI",
+
+    [
+
+        "Dashboard",
+
+        "Input Data",
+
+        "Dataset EEG",
+
+        "Training Model",
+
+        "Evaluasi Model",
+
+        "Output Analisis"
+
+    ]
+
+)
+
+
+# =========================================================
+# MENU DASHBOARD
+# =========================================================
+
+if menu == "Dashboard":
+
+    st.header(
+        "Dashboard"
+    )
+
+    df = load_eeg_data()
+
+    total_data = len(df)
+
+    total_delta = 0
+    total_theta = 0
+    total_alpha = 0
+    total_beta = 0
+    total_gamma = 0
+
+    if total_data > 0:
+
+        total_delta = len(
+            df[
+                df["brain_wave"] == "Delta"
+            ]
+        )
+
+        total_theta = len(
+            df[
+                df["brain_wave"] == "Theta"
+            ]
+        )
+
+        total_alpha = len(
+            df[
+                df["brain_wave"] == "Alpha"
+            ]
+        )
+
+        total_beta = len(
+            df[
+                df["brain_wave"] == "Beta"
+            ]
+        )
+
+        total_gamma = len(
+            df[
+                df["brain_wave"] == "Gamma"
+            ]
+        )
+
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+
+        st.metric(
+            "Total Data EEG",
+            total_data
+        )
+
+    with col2:
+
+        if os.path.exists(MODEL_PATH):
+
+            st.metric(
+                "Status Model",
+                "Tersedia"
+            )
+
+        else:
+
+            st.metric(
+                "Status Model",
+                "Belum Training"
+            )
+
+    with col3:
+
+        if total_data > 0:
+
+            dominant_wave = df[
+                "brain_wave"
+            ].mode()[0]
+
+        else:
+
+            dominant_wave = "-"
+
+        st.metric(
+            "Gelombang Dominan Dataset",
+            dominant_wave
+        )
+
+    st.divider()
+
+    if total_data > 0:
+
+        st.subheader(
+            "Distribusi Data Gelombang Otak"
+        )
+
+        distribution = df[
+            "brain_wave"
+        ].value_counts()
+
+        st.bar_chart(
+            distribution
+        )
+
+        st.subheader("Data EEG Terbaru")
+        recent_columns = ["id", "created_at", "brain_wave", "source"]
+        recent_df = df[recent_columns].head(10).rename(columns={
+            "id": "ID",
+            "created_at": "Waktu",
+            "brain_wave": "Label",
+            "source": "Sumber",
+        })
+        st.dataframe(recent_df, width="stretch", hide_index=True)
+
+    else:
+
+        st.info(
+            "Belum ada data EEG."
+        )
+
+
+# =========================================================
+# MENU INPUT DATA
+# =========================================================
+
+elif menu == "Input Data":
+    st.header("Input Data EEG")
+    st.caption("Pilih sumber data. Audio dipakai untuk mengukur frekuensi dominan, sementara fitur EEG dihitung dari CSV.")
+    model_data = load_model()
+
+    if model_data is None:
+        st.warning("Model belum tersedia. Impor dataset EEG lalu jalankan Training Model.")
+
+    def predict_input(input_values, source, save_result=True, eeg_signal=None):
+        if model_data is None:
+            st.error("Model belum ditraining.")
+            return
+        model = model_data["model"]
+        features = model_data["features"]
+        input_df = pd.DataFrame([input_values])
+        missing_features = [feature for feature in features if feature not in input_df.columns]
+        if missing_features:
+            st.error(f"Model membutuhkan fitur yang belum tersedia: {', '.join(missing_features)}.")
+            return
+        input_df = input_df[features]
+        prediction = model.predict(input_df)[0]
+        probability = model.predict_proba(input_df)[0]
+        confidence = float(np.max(probability))
+        prediction_result = {
+            **input_values, "prediction": prediction, "probability": probability,
+            "classes": model.classes_, "confidence": confidence, "source": source,
+            "eeg_signal": eeg_signal
+        }
+        if save_result:
+            save_eeg_data(
+                input_values["frequency_sound"], input_values["delta_power"],
+                input_values["theta_power"], input_values["alpha_power"],
+                input_values["beta_power"], input_values["gamma_power"],
+                prediction, source
+            )
+            st.session_state["last_prediction"] = prediction_result
+            st.success("Data berhasil diprediksi dan disimpan.")
+        else:
+            st.session_state["pending_prediction"] = prediction_result
+            st.info("Prediksi siap ditinjau. Tekan tombol simpan untuk mengirim hasil ke Output Analisis.")
+        result_col1, result_col2, result_col3 = st.columns(3)
+        result_col1.metric("Gelombang Otak", prediction)
+        result_col2.metric("Confidence", f"{confidence:.2%}")
+        result_col3.metric("Frekuensi Suara", f"{input_values['frequency_sound']:.2f} Hz")
+
+    manual_tab, audio_tab, database_tab = st.tabs(["Input manual", "Upload MP3 / WAV", "Contoh dari database"])
+
+    with manual_tab:
+        with st.form("input_eeg_form"):
+            frequency_sound = st.number_input("Frekuensi Suara (Hz)", min_value=0.0, value=100.0)
+            input_col1, input_col2 = st.columns(2)
+            with input_col1:
+                delta_power = st.number_input("Delta Power", min_value=0.0, value=0.0)
+                theta_power = st.number_input("Theta Power", min_value=0.0, value=0.0)
+                alpha_power = st.number_input("Alpha Power", min_value=0.0, value=0.0)
+            with input_col2:
+                beta_power = st.number_input("Beta Power", min_value=0.0, value=0.0)
+                gamma_power = st.number_input("Gamma Power", min_value=0.0, value=0.0)
+            submitted = st.form_submit_button("Prediksi dan Simpan", type="primary")
+        if submitted:
+            predict_input({
+                "frequency_sound": frequency_sound, "delta_power": delta_power,
+                "theta_power": theta_power, "alpha_power": alpha_power,
+                "beta_power": beta_power, "gamma_power": gamma_power
+            }, "Prediksi Model - Manual")
+
+    with audio_tab:
+        st.caption("Audio akan dianalisis langsung. Band yang tampil adalah estimasi karakteristik frekuensi audio, bukan rekaman EEG medis.")
+        audio_file = st.file_uploader("File MP3 atau WAV", type=["mp3", "wav"], help="Format MP3 dan WAV didukung.")
+        if audio_file:
+            st.audio(audio_file)
+            try:
+                audio_frequency, audio_powers = extract_audio_frequency(audio_file)
+                st.metric("Frekuensi dominan audio", f"{audio_frequency:.2f} Hz")
+            except (ValueError, RuntimeError, sf.SoundFileRuntimeError) as error:
+                st.error(f"Audio tidak dapat diproses: {error}")
+                audio_frequency = None
+                audio_powers = None
+        else:
+            audio_frequency = None
+            audio_powers = None
+        if st.button("Proses audio dan prediksi", type="primary", width="stretch"):
+            if audio_frequency is None or audio_powers is None:
+                st.error("Unggah file MP3 atau WAV sebelum memproses.")
+            else:
+                try:
+                    predict_input({"frequency_sound": audio_frequency, **audio_powers}, f"Prediksi Audio - {audio_file.name}", save_result=False)
+                except (ValueError, RuntimeError) as error:
+                    st.error(f"Audio tidak dapat dianalisis: {error}")
+
+        pending_prediction = st.session_state.get("pending_prediction")
+        if pending_prediction:
+            st.divider()
+            st.subheader("Simpan hasil ke Output Analisis")
+            st.caption(f"Sumber: {pending_prediction['source']}")
+            if st.button("Simpan hasil prediksi", type="primary", width="stretch"):
+                save_eeg_data(
+                    pending_prediction["frequency_sound"], pending_prediction["delta_power"],
+                    pending_prediction["theta_power"], pending_prediction["alpha_power"],
+                    pending_prediction["beta_power"], pending_prediction["gamma_power"],
+                    pending_prediction["prediction"], pending_prediction["source"]
+                )
+                st.session_state["last_prediction"] = pending_prediction
+                del st.session_state["pending_prediction"]
+                st.success("Hasil tersimpan. Buka menu Output Analisis untuk melihat gelombangnya.")
+
+    with database_tab:
+        database_df = load_eeg_data()
+        database_df = database_df[database_df["source"].astype(str).str.startswith("Dataset EEG:")]
+        st.caption("Pilih rekaman yang memiliki file sinyal EEG asli dari dataset aplikasi.")
+        if database_df.empty:
+            st.info("Belum ada rekaman EEG asli. Buka menu Dataset EEG lalu impor dataset.")
+        else:
+            database_options = database_df["id"].tolist()
+            selected_database_id = st.selectbox("Contoh rekaman EEG", database_options, format_func=lambda item: f"ID {item} - {database_df.loc[database_df['id'] == item, 'source'].iloc[0]}")
+            selected_record = database_df.loc[database_df["id"] == selected_database_id].iloc[0]
+            st.dataframe(pd.DataFrame([{
+                "Frekuensi suara": selected_record["frequency_sound"],
+                "Delta": selected_record["delta_power"],
+                "Theta": selected_record["theta_power"],
+                "Alpha": selected_record["alpha_power"],
+                "Beta": selected_record["beta_power"],
+                "Gamma": selected_record["gamma_power"],
+                "Label dataset": selected_record["brain_wave"],
+            }]), width="stretch", hide_index=True)
+            if st.button("Ukur gelombang dari contoh EEG", type="primary", width="stretch"):
+                try:
+                    original_signal = load_database_eeg_signal(selected_record["source"])
+                    original_powers = _band_powers(original_signal.to_numpy(dtype=float))
+                    predict_input({
+                        "frequency_sound": float(selected_record["frequency_sound"]),
+                        **original_powers,
+                    }, f"Database EEG - ID {selected_database_id}", eeg_signal=original_signal)
+                except (ValueError, FileNotFoundError, KeyError) as error:
+                    st.error(f"Sinyal EEG asli tidak dapat dibaca: {error}")
+
+
+# =========================================================
+# MENU DATASET EEG
+# =========================================================
+
+elif menu == "Dataset EEG":
+
+    st.header(
+        "Dataset EEG"
+    )
+
+    df = load_eeg_data()
+
+    st.caption(f"{len(df):,} rekaman tersimpan di database aplikasi.".replace(",", "."))
+
+    # Multi-dataset import section
+    st.subheader("📥 Import Dataset Baru")
+    
+    available_datasets = get_available_datasets()
+    
+    if available_datasets:
+        col1, col2 = st.columns([3, 1])
+        
+        with col1:
+            selected_dataset = st.selectbox(
+                "Pilih dataset untuk diimpor:",
+                available_datasets,
+                key="dataset_select"
+            )
+        
+        with col2:
+            st.write("")  # spacing
+            import_button = st.button("Impor Dataset", type="primary", key="import_dataset_btn")
+        
+        if import_button:
+            with st.spinner(f"Mengimpor data dari {selected_dataset}..."):
+                try:
+                    imported, msg = import_multi_dataset(selected_dataset)
+                    st.success(f"✅ {imported} rekaman baru berhasil diimpor dari {selected_dataset}!")
+                    st.info(msg)
+                    st.rerun()
+                except Exception as error:
+                    st.error(f"❌ Error mengimpor dataset: {error}")
+    else:
+        st.warning("⚠️ Tidak ada dataset tambahan yang ditemukan di folder Data/")
+    
+    st.divider()
+    
+    # Legacy import button (Auditory dataset)
+    if st.button("Impor / olah ulang Auditory Dataset (Legacy)", type="secondary", width="stretch"):
+        with st.spinner("Menghitung fitur dari rekaman EEG..."):
+            try:
+                imported, total_files = import_dataset_records()
+                relabeled = relabel_dataset_records()
+                st.success(f"{imported} rekaman baru diimpor; {relabeled} label EEG diolah ulang dari {total_files} file sinyal.")
+                st.rerun()
+            except (FileNotFoundError, ValueError) as error:
+                st.error(f"Dataset tidak dapat dibaca: {error}")
+
+    if len(df) == 0:
+
+        st.info(
+            "Dataset masih kosong."
+        )
+
+    else:
+
+        search = st.text_input(
+            "Cari gelombang otak"
+        )
+
+        if search:
+
+            filtered_df = df[
+                df["brain_wave"]
+                .astype(str)
+                .str.contains(
+                    search,
+                    case=False,
+                    na=False
+                )
+            ]
+
+        else:
+
+            filtered_df = df
+
+        st.dataframe(
+            filtered_df,
+            width="stretch"
+        )
+
+        st.divider()
+
+        st.subheader(
+            "Hapus Data"
+        )
+
+        selected_id = st.selectbox(
+
+            "Pilih ID Data",
+
+            df["id"].tolist()
+
+        )
+
+        if st.button(
+            "Hapus data"
+        ):
+
+            delete_eeg_data(
+                selected_id
+            )
+
+            st.success(
+                "Data berhasil dihapus."
+            )
+
+            st.rerun()
+
+
+        st.divider()
+
+        csv = df.to_csv(
+            index=False
+        ).encode(
+            "utf-8"
+        )
+
+        st.download_button(
+
+            "Download dataset CSV",
+
+            data=csv,
+
+            file_name="dataset_eeg.csv",
+
+            mime="text/csv"
+
+        )
+
+
+# =========================================================
+# MENU TRAINING MODEL
+# =========================================================
+
+elif menu == "Training Model":
+
+    st.header(
+        "Training Random Forest"
+    )
+
+    df = load_eeg_data()
+
+    if len(df) < 10:
+
+        st.warning(
+            """
+Data terlalu sedikit.
+
+Disarankan memiliki minimal
+10 data atau lebih untuk training.
+"""
+        )
+
+    if len(df) > 0:
+
+        st.subheader("Konfigurasi Model")
+        st.caption("Model EEG dilatih dari lima fitur band power hasil ekstraksi sinyal: Delta, Theta, Alpha, Beta, dan Gamma.")
+
+        default_features = [
+
+            "delta_power",
+
+            "theta_power",
+
+            "alpha_power",
+
+            "beta_power",
+
+            "gamma_power"
+
+        ]
+
+        selected_features = st.multiselect(
+
+            "Pilih Fitur",
+
+            options=default_features,
+
+            default=default_features
+
+        )
+
+        test_size = st.slider(
+
+            "Data Testing",
+
+            min_value=0.1,
+
+            max_value=0.4,
+
+            value=0.2,
+
+            step=0.05
+
+        )
+
+        n_estimators = st.slider(
+
+            "Jumlah Decision Tree",
+
+            min_value=50,
+
+            max_value=500,
+
+            value=100,
+
+            step=50
+
+        )
+
+        max_depth = st.slider(
+
+            "Maximum Depth",
+
+            min_value=2,
+
+            max_value=30,
+
+            value=10
+
+        )
+
+        if st.button(
+            "Mulai training Random Forest"
+        ):
+
+            if len(selected_features) == 0:
+
+                st.error(
+                    "Pilih minimal satu fitur."
+                )
+
+            else:
+
+                training_df = df[df["source"].astype(str).str.startswith("Dataset EEG:")].dropna(
+                    subset=selected_features +
+                    ["brain_wave"]
+                )
+
+                st.caption(f"Data training EEG asli: {len(training_df)} rekaman. Hasil upload audio tidak digunakan sebagai label training.")
+
+                X = training_df[
+                    selected_features
+                ]
+
+                y = training_df[
+                    "brain_wave"
+                ]
+
+                if y.nunique() < 2:
+
+                    st.error(
+                        """
+Minimal harus terdapat
+2 kategori gelombang otak
+untuk melakukan training.
+"""
+                    )
+
+                else:
+
+                    try:
+
+                        X_train, X_test, y_train, y_test = train_test_split(
+
+                            X,
+
+                            y,
+
+                            test_size=test_size,
+
+                            random_state=42,
+
+                            stratify=y
+
+                        )
+
+                    except ValueError:
+
+                        X_train, X_test, y_train, y_test = train_test_split(
+
+                            X,
+
+                            y,
+
+                            test_size=test_size,
+
+                            random_state=42
+
+                        )
+
+
+                    model = RandomForestClassifier(
+
+                        n_estimators=n_estimators,
+
+                        max_depth=max_depth,
+
+                        random_state=42,
+
+                        class_weight="balanced"
+
+                    )
+
+                    model.fit(
+                        X_train,
+                        y_train
+                    )
+
+                    y_pred = model.predict(
+                        X_test
+                    )
+
+                    accuracy = accuracy_score(
+                        y_test,
+                        y_pred
+                    )
+
+                    save_model(
+                        model,
+                        selected_features
+                    )
+
+                    st.session_state[
+                        "evaluation"
+                    ] = {
+
+                        "y_test":
+                            y_test,
+
+                        "y_pred":
+                            y_pred,
+
+                        "accuracy":
+                            accuracy,
+
+                        "model":
+                            model,
+
+                        "features":
+                            selected_features
+
+                    }
+
+                    st.success(
+                        "Training berhasil!"
+                    )
+
+                    st.metric(
+
+                        "Accuracy",
+
+                        f"{accuracy:.2%}"
+
+                    )
+
+
+# =========================================================
+# MENU EVALUASI
+# =========================================================
+
+elif menu == "Evaluasi Model":
+
+    st.header(
+        "Evaluasi Random Forest"
+    )
+
+    if "evaluation" not in st.session_state:
+
+        st.info(
+            """
+Silakan lakukan training model
+terlebih dahulu.
+"""
+        )
+
+    else:
+
+        evaluation = st.session_state[
+            "evaluation"
+        ]
+
+        y_test = evaluation[
+            "y_test"
+        ]
+
+        y_pred = evaluation[
+            "y_pred"
+        ]
+
+        accuracy = accuracy_score(
+            y_test,
+            y_pred
+        )
+
+        precision = precision_score(
+            y_test,
+            y_pred,
+            average="weighted",
+            zero_division=0
+        )
+
+        recall = recall_score(
+            y_test,
+            y_pred,
+            average="weighted",
+            zero_division=0
+        )
+
+        f1 = f1_score(
+            y_test,
+            y_pred,
+            average="weighted",
+            zero_division=0
+        )
+
+        col1, col2, col3, col4 = st.columns(4)
+
+        with col1:
+
+            st.metric(
+                "Accuracy",
+                f"{accuracy:.2%}"
+            )
+
+        with col2:
+
+            st.metric(
+                "Precision",
+                f"{precision:.2%}"
+            )
+
+        with col3:
+
+            st.metric(
+                "Recall",
+                f"{recall:.2%}"
+            )
+
+        with col4:
+
+            st.metric(
+                "F1 Score",
+                f"{f1:.2%}"
+            )
+
+
+        st.divider()
+
+        st.subheader(
+            "Classification Report"
+        )
+
+        report = classification_report(
+
+            y_test,
+
+            y_pred,
+
+            output_dict=True,
+
+            zero_division=0
+
+        )
+
+        report_df = pd.DataFrame(
+            report
+        ).transpose()
+
+        st.dataframe(
+            report_df,
+            width="stretch"
+        )
+
+
+        st.divider()
+
+        st.subheader(
+            "Confusion Matrix"
+        )
+
+        labels = np.unique(
+            np.concatenate(
+                [
+                    y_test,
+                    y_pred
+                ]
+            )
+        )
+
+        cm = confusion_matrix(
+
+            y_test,
+
+            y_pred,
+
+            labels=labels
+
+        )
+
+        fig, ax = plt.subplots(
+            figsize=(7, 5)
+        )
+
+        image = ax.imshow(
+            cm
+        )
+
+        ax.set_xticks(
+            np.arange(
+                len(labels)
+            )
+        )
+
+        ax.set_yticks(
+            np.arange(
+                len(labels)
+            )
+        )
+
+        ax.set_xticklabels(
+            labels
+        )
+
+        ax.set_yticklabels(
+            labels
+        )
+
+        ax.set_xlabel(
+            "Prediksi"
+        )
+
+        ax.set_ylabel(
+            "Aktual"
+        )
+
+        ax.set_title(
+            "Confusion Matrix"
+        )
+
+        for i in range(
+            len(labels)
+        ):
+
+            for j in range(
+                len(labels)
+            ):
+
+                ax.text(
+
+                    j,
+
+                    i,
+
+                    cm[i, j],
+
+                    ha="center",
+
+                    va="center"
+
+                )
+
+        fig.colorbar(
+            image
+        )
+
+        st.pyplot(
+            fig
+        )
+
+
+        st.divider()
+
+        st.subheader(
+            "Feature Importance"
+        )
+
+        model = evaluation[
+            "model"
+        ]
+
+        features = evaluation[
+            "features"
+        ]
+
+        importance_df = pd.DataFrame({
+
+            "Feature":
+                features,
+
+            "Importance":
+                model.feature_importances_
+
+        })
+
+        importance_df = importance_df.sort_values(
+
+            by="Importance",
+
+            ascending=False
+
+        )
+
+        st.dataframe(
+            importance_df,
+            width="stretch"
+        )
+
+        fig, ax = plt.subplots(
+            figsize=(8, 4)
+        )
+
+        ax.barh(
+
+            importance_df[
+                "Feature"
+            ],
+
+            importance_df[
+                "Importance"
+            ]
+
+        )
+
+        ax.set_xlabel(
+            "Importance"
+        )
+
+        ax.set_title(
+            "Pengaruh Fitur terhadap Prediksi"
+        )
+
+        st.pyplot(
+            fig
+        )
+
+
+# =========================================================
+# MENU OUTPUT ANALISIS
+# =========================================================
+
+elif menu == "Output Analisis":
+
+    st.header("Output Analisis Aktivitas Otak")
+
+    if "last_prediction" not in st.session_state:
+
+        st.info(
+            """
+Belum ada hasil prediksi.
+
+Silakan masuk ke menu
+Input Data dan lakukan prediksi.
+"""
+        )
+
+    else:
+
+        result = st.session_state[
+            "last_prediction"
+        ]
+
+        prediction = result[
+            "prediction"
+        ]
+
+        confidence = result[
+            "confidence"
+        ]
+
+        frequency_sound = result[
+            "frequency_sound"
+        ]
+
+        delta_power = result[
+            "delta_power"
+        ]
+
+        theta_power = result[
+            "theta_power"
+        ]
+
+        alpha_power = result[
+            "alpha_power"
+        ]
+
+        beta_power = result[
+            "beta_power"
+        ]
+
+        gamma_power = result[
+            "gamma_power"
+        ]
+
+
+        # =================================================
+        # METRIC UTAMA
+        # =================================================
+
+        col1, col2, col3 = st.columns(3)
+
+        with col1:
+
+            st.metric(
+                "Gelombang Dominan",
+                prediction
+            )
+
+        with col2:
+
+            st.metric(
+                "Confidence Model",
+                f"{confidence:.2%}"
+            )
+
+        with col3:
+
+            st.metric(
+                "Frekuensi Suara",
+                f"{frequency_sound} Hz"
+            )
+
+
+        st.divider()
+
+        if result.get("eeg_signal") is not None:
+            st.subheader("Ekstraksi EEG Asli")
+            st.caption("Sinyal ini diambil langsung dari rekaman database dan dinormalisasi per kanal untuk visualisasi.")
+            original_eeg_fig = plot_original_eeg_signal(result["eeg_signal"])
+            st.pyplot(original_eeg_fig, width="stretch")
+            st.divider()
+
+        st.subheader("Contoh Bentuk Gelombang")
+        st.caption("Ilustrasi karakteristik frekuensi band hasil analisis audio, bukan rekonstruksi sinyal EEG mentah.")
+        waveform_fig = plot_waveform_example(prediction)
+        st.pyplot(waveform_fig, width="stretch")
+
+
+        # =================================================
+        # DIAGRAM EEG
+        # =================================================
+
+        col1, col2 = st.columns(2)
+
+        with col1:
+
+            st.subheader(
+                "Kekuatan Gelombang EEG"
+            )
+
+            fig_bar = plot_brain_wave_bar(
+
+                delta_power,
+
+                theta_power,
+
+                alpha_power,
+
+                beta_power,
+
+                gamma_power
+
+            )
+
+            st.pyplot(
+                fig_bar
+            )
+
+
+        with col2:
+
+            st.subheader(
+                "Profil Aktivitas EEG"
+            )
+
+            fig_radar = plot_radar_chart(
+
+                delta_power,
+
+                theta_power,
+
+                alpha_power,
+
+                beta_power,
+
+                gamma_power
+
+            )
+
+            st.pyplot(
+                fig_radar
+            )
+
+
+        # =================================================
+        # PROBABILITAS MODEL
+        # =================================================
+
+        st.divider()
+
+        st.subheader(
+            "Probabilitas Prediksi"
+        )
+
+        model_probabilities = dict(zip(result["classes"], result["probability"]))
+        probability_df = pd.DataFrame({
+            "Gelombang": list(BAND_RANGES),
+            "Rentang frekuensi": [BAND_RANGES[band] for band in BAND_RANGES],
+            "Probabilitas model": [
+                f"{model_probabilities[band]:.2%}" if band in model_probabilities else "Belum tersedia"
+                for band in BAND_RANGES
+            ],
+        })
+
+        st.caption(
+            "Probabilitas hanya tersedia untuk kelas yang sudah dipelajari model. "
+            f"Kelas model saat ini: {', '.join(result['classes'])}."
+        )
+
+        chart_df = pd.DataFrame({
+            "Gelombang": list(model_probabilities),
+            "Probabilitas": list(model_probabilities.values()),
+        })
+
+        st.bar_chart(
+            chart_df.set_index(
+                "Gelombang"
+            )
+
+        )
+
+        st.dataframe(probability_df, width="stretch", hide_index=True)
+
+
+        # =================================================
+        # INTERPRETASI
+        # =================================================
+
+        st.divider()
+
+        interpretation = get_brain_interpretation(
+            prediction
+        )
+
+        st.subheader(
+            interpretation["title"]
+        )
+
+        st.info(
+            interpretation[
+                "description"
+            ]
+        )
+
+        st.write(
+            "### Interpretasi Umum Aktivitas"
+        )
+
+        for activity in interpretation[
+            "activities"
+        ]:
+
+            st.write(
+                f"• {activity}"
+            )
+
+
+        # =================================================
+        # TABEL POWER
+        # =================================================
+
+        st.divider()
+
+        st.subheader(
+            "Detail Aktivitas EEG"
+        )
+
+        detail_df = pd.DataFrame({
+
+            "Gelombang": [
+
+                "Delta",
+
+                "Theta",
+
+                "Alpha",
+
+                "Beta",
+
+                "Gamma"
+
+            ],
+
+            "Power": [
+
+                delta_power,
+
+                theta_power,
+
+                alpha_power,
+
+                beta_power,
+
+                gamma_power
+
+            ]
+
+        })
+
+        st.dataframe(
+
+            detail_df,
+
+            width="stretch"
+
+        )
+
+
+        # =================================================
+        # KESIMPULAN
+        # =================================================
+
+        st.divider()
+
+        st.subheader(
+            "Kesimpulan Analisis"
+        )
+
+        st.write(
+
+            f"""
+Berdasarkan data EEG yang dimasukkan dan hasil
+prediksi menggunakan metode Random Forest, model
+memprediksi bahwa aktivitas gelombang otak yang
+dominan adalah **{prediction}**.
+
+Tingkat keyakinan model terhadap hasil prediksi
+adalah **{confidence:.2%}**.
+
+Analisis dilakukan berdasarkan nilai power dari
+gelombang Delta, Theta, Alpha, Beta, dan Gamma.
+Pendekatan ini berada pada irisan neuroscience,
+neuroinformatika, dan machine learning.
+"""
+
+        )
+
+        st.warning(
+
+            """
+Catatan:
+
+Hasil aplikasi merupakan analisis komputasional
+berbasis sinyal EEG dan model machine learning.
+Interpretasi ini bukan diagnosis medis atau neurologis.
+Penilaian klinis harus dilakukan oleh neurolog atau
+tenaga kesehatan yang berwenang.
+"""
+
+        )
